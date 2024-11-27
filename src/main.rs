@@ -33,10 +33,9 @@ fn main() -> Result<(), Error> {
 
     tracee.syscall()?;
 
-    while let Ok(status) = wait::waitpid(child) {
-        if let wait::WaitStatus::Exited(s) = status {
+    loop {
+        if let wait::WaitStatus::Exited(s) = tracee.wait()? {
             println!("child exited with status: {}", s);
-            tracee.drop();
             break;
         }
         let regs = tracee.getregs()?;

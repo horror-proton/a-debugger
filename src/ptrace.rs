@@ -98,8 +98,8 @@ impl Tracee {
         Err(Error::from_raw_os_error(libc::ECHILD))
     }
 
-    pub fn drop(self) {
-        detach(self.pid);
+    pub fn wait(&self) -> Result<wait::WaitStatus, Error> {
+        waitpid(self.pid)
     }
 
     pub fn kill(&self) -> Result<(), Error> {
@@ -129,6 +129,15 @@ impl Tracee {
         )
     }
 
+    pub fn cont_signal(&self, signal: libc::c_int) -> Result<(), Error> {
+        ptrace(
+            libc::PTRACE_CONT,
+            self.pid,
+            std::ptr::null_mut(),
+            signal as *mut libc::c_void,
+        )
+    }
+
     pub fn getregs(&self) -> Result<libc::user_regs_struct, Error> {
         let mut regs = std::mem::MaybeUninit::<libc::user_regs_struct>::uninit();
         ptrace(
@@ -140,11 +149,70 @@ impl Tracee {
         Ok(unsafe { regs.assume_init() })
     }
 
+    pub fn getsiginfo(&self) -> Result<libc::siginfo_t, Error> {
+        let mut siginfo = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+        ptrace(
+            libc::PTRACE_GETSIGINFO,
+            self.pid,
+            std::ptr::null_mut(),
+            siginfo.as_mut_ptr() as *mut libc::c_void,
+        )?;
+        Ok(unsafe { siginfo.assume_init() })
+    }
+
     pub fn peekdata(&self, addr: *mut libc::c_void) -> Result<libc::c_long, Error> {
         peekdata(self.pid, addr)
     }
 
     pub fn pokedata(&self, addr: *mut libc::c_void, data: libc::c_long) -> Result<(), Error> {
         pokedata(self.pid, addr, data)
+    }
+}
+
+impl Drop for Tracee {
+    fn drop(&mut self) {
+        detach(self.pid);
+    }
+}
+
+struct StoppedStatus {
+    regs: libc::user_regs_struct,
+    signal: libc::c_int,
+}
+
+struct Debuggee {
+    tracee: Tracee,
+    last_regs: Option<libc::user_regs_struct>,
+    last_signal: Option<libc::siginfo_t>,
+}
+
+impl Debuggee {
+    pub fn new(pid: pid_t) -> Result<Self, Error> {
+        let tracee = Tracee::new(pid)?;
+        Ok(Self {
+            tracee,
+            last_regs: None,
+            last_signal: None,
+        })
+    }
+
+    pub fn wait(&mut self) -> Result<wait::WaitStatus, Error> {
+        let status = self.tracee.wait()?;
+        if let wait::WaitStatus::Stopped(_) = status {
+            let regs = self.tracee.getregs()?;
+            let siginfo = self.tracee.getsiginfo()?;
+            self.last_regs = Some(regs);
+            self.last_signal = Some(siginfo);
+        }
+        Ok(status)
+    }
+
+    pub fn cont(&mut self) -> Result<(), Error> {
+        if let Some(siginfo) = self.last_signal {
+            if siginfo.si_signo != libc::SIGTRAP {
+                return self.tracee.cont_signal(siginfo.si_signo);
+            }
+        }
+        self.tracee.cont()
     }
 }
