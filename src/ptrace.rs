@@ -72,7 +72,7 @@ pub fn peekdata(pid: pid_t, addr: *mut libc::c_void) -> Result<libc::c_long, Err
     }
 }
 
-pub fn pokedata(pid: pid_t, addr: *mut libc::c_void, data: libc::c_long) -> Result<(), Error> {
+pub fn pokedata(pid: pid_t, addr: *mut libc::c_void, data: u64) -> Result<(), Error> {
     ptrace(libc::PTRACE_POKEDATA, pid, addr, data as *mut libc::c_void)
 }
 
@@ -81,7 +81,11 @@ pub struct Tracee {
 }
 
 impl Tracee {
-    pub fn new(pid: pid_t) -> Result<Self, Error> {
+    pub fn new(pid: pid_t) -> Self {
+        Self { pid }
+    }
+
+    pub fn new_wait(pid: pid_t) -> Result<Self, Error> {
         let res = waitpid(pid)?;
         if let wait::WaitStatus::Stopped(_) = res {
             return Ok(Self { pid });
@@ -129,6 +133,15 @@ impl Tracee {
         )
     }
 
+    pub fn singlestep(&self) -> Result<(), Error> {
+        ptrace(
+            libc::PTRACE_SINGLESTEP,
+            self.pid,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    }
+
     pub fn cont_signal(&self, signal: libc::c_int) -> Result<(), Error> {
         ptrace(
             libc::PTRACE_CONT,
@@ -160,11 +173,11 @@ impl Tracee {
         Ok(unsafe { siginfo.assume_init() })
     }
 
-    pub fn peekdata(&self, addr: *mut libc::c_void) -> Result<libc::c_long, Error> {
-        peekdata(self.pid, addr)
+    pub fn peekdata(&self, addr: *mut libc::c_void) -> Result<u64, Error> {
+        peekdata(self.pid, addr).map(|x| x as u64)
     }
 
-    pub fn pokedata(&self, addr: *mut libc::c_void, data: libc::c_long) -> Result<(), Error> {
+    pub fn pokedata(&self, addr: *mut libc::c_void, data: u64) -> Result<(), Error> {
         pokedata(self.pid, addr, data)
     }
 }
@@ -180,19 +193,23 @@ struct StoppedStatus {
     signal: libc::c_int,
 }
 
-struct Debuggee {
+pub struct Debuggee {
     tracee: Tracee,
     last_regs: Option<libc::user_regs_struct>,
     last_signal: Option<libc::siginfo_t>,
+    breakpoint: Option<*mut libc::c_void>,
+    breakpoint_data: Option<u64>,
 }
 
 impl Debuggee {
     pub fn new(pid: pid_t) -> Result<Self, Error> {
-        let tracee = Tracee::new(pid)?;
+        let tracee = Tracee::new(pid);
         Ok(Self {
             tracee,
             last_regs: None,
             last_signal: None,
+            breakpoint: None,
+            breakpoint_data: None,
         })
     }
 
@@ -208,11 +225,27 @@ impl Debuggee {
     }
 
     pub fn cont(&mut self) -> Result<(), Error> {
+        if let Some(regs) = self.last_regs {
+            if let Some(bp) = self.breakpoint {
+                if regs.rip == bp as u64 + 1 {
+                    todo!("restore breakpoint");
+                }
+            }
+        }
+
         if let Some(siginfo) = self.last_signal {
             if siginfo.si_signo != libc::SIGTRAP {
                 return self.tracee.cont_signal(siginfo.si_signo);
             }
         }
         self.tracee.cont()
+    }
+
+    pub fn set_break_point(&mut self, address: *mut libc::c_void) -> Result<(), Error> {
+        let data = self.tracee.peekdata(address)?;
+        self.tracee.pokedata(address, (data & !0xff) | 0xcc)?;
+        self.breakpoint = Some(address);
+        self.breakpoint_data = Some(data);
+        Ok(())
     }
 }

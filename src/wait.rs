@@ -11,6 +11,7 @@ pub fn waitpid_impl(pid: libc::pid_t) -> Result<libc::c_int, Error> {
     }
 }
 
+#[derive(Debug)]
 pub enum WaitStatus {
     Exited(i32),
     Signaled(i32),

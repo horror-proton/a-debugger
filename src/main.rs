@@ -23,28 +23,20 @@ fn main() -> Result<(), Error> {
         return Err(err);
     }
 
-    let tracee = ptrace::Tracee::new(child)?;
-
     let foo_addr = 0x555555555149 as *mut libc::c_void;
+    let mut debuggee = ptrace::Debuggee::new(child)?;
+    debuggee.wait()?;
 
-    // tracee.pokedata(foo_addr, 0xccccccccccccccc)?;
-    let data = tracee.peekdata(foo_addr)?;
-    println!("data at {:?}: {:#16x}", foo_addr, data);
-
-    tracee.syscall()?;
+    debuggee.set_break_point(foo_addr)?;
 
     loop {
-        if let wait::WaitStatus::Exited(s) = tracee.wait()? {
-            println!("child exited with status: {}", s);
+        debuggee.cont()?;
+        let status = debuggee.wait()?;
+        println!("status: {:?}", status);
+        if let wait::WaitStatus::Stopped(_) = status {
+        } else {
             break;
         }
-        let regs = tracee.getregs()?;
-        let rax = regs.orig_rax;
-        let rip = regs.rip;
-        println!("child syscall: {} at {:x}, continuing...", rax, rip);
-
-        // tracee.kill()?;
-        tracee.cont()?;
     }
     Ok(())
 }
