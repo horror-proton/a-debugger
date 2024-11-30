@@ -162,6 +162,15 @@ impl Tracee {
         Ok(unsafe { regs.assume_init() })
     }
 
+    pub fn setregs(&self, regs: &libc::user_regs_struct) -> Result<(), Error> {
+        ptrace(
+            libc::PTRACE_SETREGS,
+            self.pid,
+            std::ptr::null_mut(),
+            regs as *const libc::user_regs_struct as *mut libc::c_void,
+        )
+    }
+
     pub fn getsiginfo(&self) -> Result<libc::siginfo_t, Error> {
         let mut siginfo = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
         ptrace(
@@ -188,17 +197,10 @@ impl Drop for Tracee {
     }
 }
 
-struct StoppedStatus {
-    regs: libc::user_regs_struct,
-    signal: libc::c_int,
-}
-
 pub struct Debuggee {
     tracee: Tracee,
-    last_regs: Option<libc::user_regs_struct>,
-    last_signal: Option<libc::siginfo_t>,
-    breakpoint: Option<*mut libc::c_void>,
-    breakpoint_data: Option<u64>,
+    last_status: Option<(libc::user_regs_struct, libc::siginfo_t)>,
+    breakpoint: Option<(*mut libc::c_void, u64)>,
 }
 
 impl Debuggee {
@@ -206,10 +208,8 @@ impl Debuggee {
         let tracee = Tracee::new(pid);
         Ok(Self {
             tracee,
-            last_regs: None,
-            last_signal: None,
+            last_status: None,
             breakpoint: None,
-            breakpoint_data: None,
         })
     }
 
@@ -218,22 +218,27 @@ impl Debuggee {
         if let wait::WaitStatus::Stopped(_) = status {
             let regs = self.tracee.getregs()?;
             let siginfo = self.tracee.getsiginfo()?;
-            self.last_regs = Some(regs);
-            self.last_signal = Some(siginfo);
+            self.last_status = Some((regs, siginfo));
         }
         Ok(status)
     }
 
     pub fn cont(&mut self) -> Result<(), Error> {
-        if let Some(regs) = self.last_regs {
-            if let Some(bp) = self.breakpoint {
-                if regs.rip == bp as u64 + 1 {
-                    todo!("restore breakpoint");
-                }
+        let regs = self.last_status.unwrap().0;
+        if let Some((addr, orig_data)) = self.breakpoint {
+            if regs.rip == addr as u64 + 1 {
+                eprintln!("resuming from breakpoint at {:?}", addr);
+                let mut new_regs = regs.clone();
+                new_regs.rip -= 1;
+                self.tracee.setregs(&new_regs)?;
+                self.tracee.pokedata(addr, orig_data)?;
+                self.tracee.singlestep()?;
+                self.tracee.wait()?; // TODO: assert == Stopped(SIGTRAP)
+                self.tracee.pokedata(addr, (orig_data & !0xff) | 0xcc)?;
             }
         }
 
-        if let Some(siginfo) = self.last_signal {
+        if let Some((_, siginfo)) = self.last_status {
             if siginfo.si_signo != libc::SIGTRAP {
                 return self.tracee.cont_signal(siginfo.si_signo);
             }
@@ -244,8 +249,7 @@ impl Debuggee {
     pub fn set_break_point(&mut self, address: *mut libc::c_void) -> Result<(), Error> {
         let data = self.tracee.peekdata(address)?;
         self.tracee.pokedata(address, (data & !0xff) | 0xcc)?;
-        self.breakpoint = Some(address);
-        self.breakpoint_data = Some(data);
+        self.breakpoint = Some((address, data));
         Ok(())
     }
 }
