@@ -23,11 +23,11 @@ fn main() -> Result<(), Error> {
         return Err(err);
     }
 
-    let foo_addr = 0x555555555149 as *mut libc::c_void;
     let mut debuggee = ptrace::Debuggee::new(child)?;
     debuggee.wait()?;
 
-    debuggee.set_break_point(foo_addr)?;
+    debuggee.set_break_point(0x555555555149 as *mut libc::c_void)?;
+    debuggee.set_break_point(0x55555555515f as *mut libc::c_void)?;
 
     loop {
         debuggee.cont()?;

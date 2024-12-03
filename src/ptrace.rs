@@ -1,6 +1,5 @@
 use libc::pid_t;
 use std::io::Error;
-// use std::io::RawOsError;
 
 use super::wait;
 use super::wait::waitpid;
@@ -200,7 +199,7 @@ impl Drop for Tracee {
 pub struct Debuggee {
     tracee: Tracee,
     last_status: Option<(libc::user_regs_struct, libc::siginfo_t)>,
-    breakpoint: Option<(*mut libc::c_void, u64)>,
+    breakpoints: std::collections::HashMap<*mut libc::c_void, u64>,
 }
 
 impl Debuggee {
@@ -209,7 +208,7 @@ impl Debuggee {
         Ok(Self {
             tracee,
             last_status: None,
-            breakpoint: None,
+            breakpoints: std::collections::HashMap::new(),
         })
     }
 
@@ -225,17 +224,18 @@ impl Debuggee {
 
     pub fn cont(&mut self) -> Result<(), Error> {
         let regs = self.last_status.unwrap().0;
-        if let Some((addr, orig_data)) = self.breakpoint {
-            if regs.rip == addr as u64 + 1 {
-                eprintln!("resuming from breakpoint at {:?}", addr);
-                let mut new_regs = regs.clone();
-                new_regs.rip -= 1;
-                self.tracee.setregs(&new_regs)?;
-                self.tracee.pokedata(addr, orig_data)?;
-                self.tracee.singlestep()?;
-                self.tracee.wait()?; // TODO: assert == Stopped(SIGTRAP)
-                self.tracee.pokedata(addr, (orig_data & !0xff) | 0xcc)?;
-            }
+        if let Some((&addr, &orig_data)) = self
+            .breakpoints
+            .get_key_value(&((regs.rip - 1) as *mut libc::c_void))
+        {
+            eprintln!("resuming from breakpoint at {:?}", addr);
+            let mut new_regs = regs.clone();
+            new_regs.rip -= 1;
+            self.tracee.setregs(&new_regs)?;
+            self.tracee.pokedata(addr, orig_data)?;
+            self.tracee.singlestep()?;
+            self.tracee.wait()?; // TODO: assert == Stopped(SIGTRAP)
+            self.tracee.pokedata(addr, (orig_data & !0xff) | 0xcc)?;
         }
 
         if let Some((_, siginfo)) = self.last_status {
@@ -247,9 +247,12 @@ impl Debuggee {
     }
 
     pub fn set_break_point(&mut self, address: *mut libc::c_void) -> Result<(), Error> {
-        let data = self.tracee.peekdata(address)?;
-        self.tracee.pokedata(address, (data & !0xff) | 0xcc)?;
-        self.breakpoint = Some((address, data));
+        // TODO: what if another breakpoint is too close and overlaps?
+        if !self.breakpoints.contains_key(&address) {
+            let data = self.tracee.peekdata(address)?;
+            self.tracee.pokedata(address, (data & !0xff) | 0xcc)?;
+            self.breakpoints.insert(address, data);
+        }
         Ok(())
     }
 }
