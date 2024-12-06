@@ -1,3 +1,5 @@
+mod elfread;
+mod procfs;
 mod ptrace;
 mod wait;
 use std::io::Error;
@@ -26,8 +28,16 @@ fn main() -> Result<(), Error> {
     let mut debuggee = ptrace::Debuggee::new(child)?;
     debuggee.wait()?;
 
-    debuggee.set_break_point(0x555555555149 as *mut libc::c_void)?;
-    debuggee.set_break_point(0x55555555515f as *mut libc::c_void)?;
+    let maps = procfs::parse_maps(&std::path::Path::new("/proc").join(child.to_string()));
+    for map in maps {
+        if let Some(path) = map.path {
+            println!("path: {:?}", path);
+            elfread::elf_get_symtab(path.as_path());
+        }
+    }
+
+    debuggee.set_break_point(0x555555555159 as *mut libc::c_void)?;
+    debuggee.set_break_point(0x55555555516f as *mut libc::c_void)?;
 
     loop {
         debuggee.cont()?;

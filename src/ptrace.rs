@@ -247,6 +247,7 @@ impl Debuggee {
     }
 
     pub fn set_break_point(&mut self, address: *mut libc::c_void) -> Result<(), Error> {
+        // gdb writes to procfs directly to set breakpoints
         // TODO: what if another breakpoint is too close and overlaps?
         if !self.breakpoints.contains_key(&address) {
             let data = self.tracee.peekdata(address)?;
