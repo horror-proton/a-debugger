@@ -196,6 +196,11 @@ impl Drop for Tracee {
     }
 }
 
+struct MemoryMaps {
+
+
+}
+
 pub struct Debuggee {
     tracee: Tracee,
     last_status: Option<(libc::user_regs_struct, libc::siginfo_t)>,

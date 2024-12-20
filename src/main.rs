@@ -2,6 +2,7 @@ mod elfread;
 mod procfs;
 mod ptrace;
 mod wait;
+use std::collections::HashMap;
 use std::io::Error;
 
 fn main() -> Result<(), Error> {
@@ -29,15 +30,44 @@ fn main() -> Result<(), Error> {
     debuggee.wait()?;
 
     let maps = procfs::parse_maps(&std::path::Path::new("/proc").join(child.to_string()));
-    for map in maps {
-        if let Some(path) = map.path {
-            println!("path: {:?}", path);
-            elfread::elf_get_symtab(path.as_path());
+    let mut files = HashMap::<std::path::PathBuf, elfread::ElfFile>::new();
+    for map in &maps {
+        if let Some(path) = &map.path {
+            // println!("path: {:?}", path);
+            // elfread::elf_get_symtab(path.as_path());
+            files
+                .entry(path.clone())
+                .or_insert_with(|| elfread::ElfFile::new(path.to_path_buf()));
         }
     }
 
-    debuggee.set_break_point(0x555555555159 as *mut libc::c_void)?;
-    debuggee.set_break_point(0x55555555516f as *mut libc::c_void)?;
+    for (path, file) in files.iter() {
+        println!("path: {:?}", path);
+        for sym in file.symbols.iter() {
+            println!("name: {:?}", sym.name);
+        }
+    }
+
+    let expected = "foo";
+    let (f, sym) = files
+        .iter()
+        .find_map(|(f, file)| {
+            file.symbols
+                .iter()
+                .find(|sym| sym.name == expected)
+                .map(|sym| (f, sym.address))
+        })
+        .expect("symbol not found");
+
+    for info in maps.iter() {
+        if info.path == Some(f.clone()) {
+            if sym >= info.offset && sym < info.offset + info.length {
+                let memaddr = info.address + sym - info.offset;
+                println!("setting breakpoint at: {:x}", memaddr);
+                debuggee.set_break_point(memaddr as *mut libc::c_void)?;
+            }
+        }
+    }
 
     loop {
         debuggee.cont()?;
